@@ -1,0 +1,1495 @@
+import flet as ft
+import json
+import random
+import datetime
+import time
+from typing import Dict, List, Optional
+import threading
+
+
+# Конфигурация приложения
+class AppConfig:
+    APP_TITLE = "PyLearn - Учим Python"
+    PRIMARY_COLOR = "#58CC02"
+    SECONDARY_COLOR = "#1CB0F6"
+    ACCENT_COLOR = "#FF9600"
+    BACKGROUND_COLOR = "#F5F5F5"
+    TEXT_COLOR = "#333333"
+    SUCCESS_COLOR = "#4CAF50"
+    WARNING_COLOR = "#FFC107"
+    DANGER_COLOR = "#F44336"
+
+    LESSONS = 4
+    TASKS_PER_LESSON = 15
+
+    RARITIES = {
+        "common": {"name": "Обычный", "color": "#9E9E9E", "chance": 60, "multiplier": 1},
+        "rare": {"name": "Редкий", "color": "#2196F3", "chance": 25, "multiplier": 2},
+        "epic": {"name": "Эпический", "color": "#9C27B0", "chance": 10, "multiplier": 3},
+        "mythic": {"name": "Мифический", "color": "#FF9800", "chance": 4, "multiplier": 5},
+        "legendary": {"name": "Легендарный", "color": "#FF5722", "chance": 1, "multiplier": 10}
+    }
+
+    BOXES = {
+        "common_box": {"name": "Обычный ящик", "price": 100, "rarity": "common"},
+        "rare_box": {"name": "Редкий ящик", "price": 250, "rarity": "rare"},
+        "epic_box": {"name": "Эпический ящик", "price": 500, "rarity": "epic"},
+        "mythic_box": {"name": "Мифический ящик", "price": 1000, "rarity": "mythic"},
+        "legendary_box": {"name": "Легендарный ящик", "price": 2500, "rarity": "legendary"}
+    }
+
+    XP_MULTIPLIERS = {
+        5: {"price": 50, "duration": 5},
+        10: {"price": 90, "duration": 10},
+        15: {"price": 130, "duration": 15},
+        30: {"price": 200, "duration": 30},
+        40: {"price": 280, "duration": 40},
+        50: {"price": 350, "duration": 50},
+        60: {"price": 400, "duration": 60}
+    }
+
+
+# Модель данных пользователя
+class UserData:
+    def __init__(self):
+        self.diamonds = 100
+        self.experience = 0
+        self.streak_days = 0
+        self.last_login = None
+        self.completed_tasks = {}
+        self.current_lesson = 1
+        self.current_task = 1
+        self.xp_multiplier = 1
+        self.multiplier_end_time = None
+        self.inventory = {}
+
+    def to_dict(self):
+        return {
+            "diamonds": self.diamonds,
+            "experience": self.experience,
+            "streak_days": self.streak_days,
+            "last_login": self.last_login,
+            "completed_tasks": self.completed_tasks,
+            "current_lesson": self.current_lesson,
+            "current_task": self.current_task,
+            "xp_multiplier": self.xp_multiplier,
+            "multiplier_end_time": self.multiplier_end_time,
+            "inventory": self.inventory
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        user = cls()
+        user.diamonds = data.get("diamonds", 100)
+        user.experience = data.get("experience", 0)
+        user.streak_days = data.get("streak_days", 0)
+        user.last_login = data.get("last_login")
+        user.completed_tasks = data.get("completed_tasks", {})
+        user.current_lesson = data.get("current_lesson", 1)
+        user.current_task = data.get("current_task", 1)
+        user.xp_multiplier = data.get("xp_multiplier", 1)
+        user.multiplier_end_time = data.get("multiplier_end_time")
+        user.inventory = data.get("inventory", {})
+        return user
+
+
+# Менеджер данных
+class DataManager:
+    def __init__(self):
+        self.user_data = self.load_user_data()
+        self.update_streak()
+
+    def load_user_data(self):
+        try:
+            with open("user_data.json", "r") as f:
+                data = json.load(f)
+                return UserData.from_dict(data)
+        except FileNotFoundError:
+            return UserData()
+
+    def save_user_data(self):
+        with open("user_data.json", "w") as f:
+            json.dump(self.user_data.to_dict(), f)
+
+    def update_streak(self):
+        today = datetime.date.today().isoformat()
+
+        if self.user_data.last_login != today:
+            if self.user_data.last_login:
+                last_login_date = datetime.date.fromisoformat(self.user_data.last_login)
+                today_date = datetime.date.today()
+                if (today_date - last_login_date).days == 1:
+                    self.user_data.streak_days += 1
+                elif (today_date - last_login_date).days > 1:
+                    self.user_data.streak_days = 1
+            else:
+                self.user_data.streak_days = 1
+
+            self.user_data.last_login = today
+            self.save_user_data()
+
+    def complete_task(self, lesson, task):
+        key = f"lesson_{lesson}_task_{task}"
+        if key not in self.user_data.completed_tasks:
+            self.user_data.completed_tasks[key] = {
+                "completed": True,
+                "xp_earned": 10 * self.user_data.xp_multiplier,
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+            self.user_data.experience += 10 * self.user_data.xp_multiplier
+
+            # Обновляем текущую задачу
+            if task < AppConfig.TASKS_PER_LESSON:
+                self.user_data.current_task = task + 1
+            elif lesson < AppConfig.LESSONS:
+                self.user_data.current_lesson = lesson + 1
+                self.user_data.current_task = 1
+
+            self.save_user_data()
+            return True
+        return False
+
+    def get_progress(self):
+        total_tasks = AppConfig.LESSONS * AppConfig.TASKS_PER_LESSON
+        completed = len(self.user_data.completed_tasks)
+        return completed / total_tasks * 100 if total_tasks > 0 else 0
+
+
+# Генератор уроков
+class LessonGenerator:
+    LESSONS = {
+        1: [
+            {"title": "Привет, Python!", "type": "theory",
+             "content": "Python - это высокоуровневый язык программирования общего назначения. Он известен своей простотой и читаемостью."},
+            {"title": "Ваша первая программа", "type": "code",
+             "content": "Напишите программу, которая выводит 'Привет, мир!'",
+             "solution": "print('Привет, мир!')"},
+            {"title": "Переменные", "type": "theory",
+             "content": "Переменные используются для хранения данных. В Python не нужно объявлять тип переменной."},
+            {"title": "Создайте переменную", "type": "code",
+             "content": "Создайте переменную с именем 'name' и присвойте ей ваше имя",
+             "solution": "name = 'Ваше Имя'"},
+            {"title": "Типы данных", "type": "theory",
+             "content": "Основные типы данных в Python: строки (str), числа (int, float), списки (list), словари (dict)."},
+            {"title": "Строки", "type": "code",
+             "content": "Создайте строку 'Python' и выведите её длину",
+             "solution": "text = 'Python'\nprint(len(text))"},
+            {"title": "Числа", "type": "code",
+             "content": "Создайте переменную с числом 42 и увеличьте её на 8",
+             "solution": "number = 42\nnumber += 8\nprint(number)"},
+            {"title": "Списки", "type": "theory",
+             "content": "Список - это упорядоченная коллекция элементов. Элементы списка могут быть разных типов."},
+            {"title": "Работа со списками", "type": "code",
+             "content": "Создайте список чисел от 1 до 5 и добавьте число 6",
+             "solution": "numbers = [1, 2, 3, 4, 5]\nnumbers.append(6)\nprint(numbers)"},
+            {"title": "Условные операторы", "type": "theory",
+             "content": "Оператор if позволяет выполнять код только при выполнении определённого условия."},
+            {"title": "Проверка условия", "type": "code",
+             "content": "Напишите программу, которая проверяет, является ли число положительным",
+             "solution": "number = 10\nif number > 0:\n    print('Число положительное')"},
+            {"title": "Циклы for", "type": "theory",
+             "content": "Цикл for используется для перебора элементов последовательности (списка, строки, словаря)."},
+            {"title": "Использование цикла for", "type": "code",
+             "content": "Напечатайте числа от 1 до 5 используя цикл for",
+             "solution": "for i in range(1, 6):\n    print(i)"},
+            {"title": "Функции", "type": "theory",
+             "content": "Функции позволяют группировать код в повторно используемые блоки."},
+            {"title": "Создайте функцию", "type": "code",
+             "content": "Создайте функцию, которая принимает два числа и возвращает их сумму",
+             "solution": "def add(a, b):\n    return a + b"}
+        ],
+        2: [
+            {"title": "Словари", "type": "theory",
+             "content": "Словарь хранит пары ключ-значение. Ключи должны быть уникальными."},
+            {"title": "Работа со словарями", "type": "code",
+             "content": "Создайте словарь с информацией о пользователе",
+             "solution": "user = {'name': 'Alice', 'age': 25}\nprint(user)"},
+            {"title": "Множества", "type": "theory",
+             "content": "Множество - это неупорядоченная коллекция уникальных элементов."},
+            {"title": "Операции с множествами", "type": "code",
+             "content": "Создайте два множества и найдите их пересечение",
+             "solution": "set1 = {1, 2, 3}\nset2 = {2, 3, 4}\nprint(set1 & set2)"},
+            {"title": "Цикл while", "type": "theory",
+             "content": "Цикл while выполняет код, пока условие истинно."},
+            {"title": "Использование while", "type": "code",
+             "content": "Используйте цикл while для подсчёта от 1 до 3",
+             "solution": "i = 1\nwhile i <= 3:\n    print(i)\n    i += 1"},
+            {"title": "Обработка исключений", "type": "theory",
+             "content": "Исключения позволяют обрабатывать ошибки в программе."},
+            {"title": "Try-except блок", "type": "code",
+             "content": "Напишите код, который обрабатывает деление на ноль",
+             "solution": "try:\n    result = 10 / 0\nexcept ZeroDivisionError:\n    print('Деление на ноль!')"},
+            {"title": "Файлы", "type": "theory",
+             "content": "Python предоставляет функции для работы с файлами: чтение, запись, добавление."},
+            {"title": "Чтение файла", "type": "code",
+             "content": "Напишите программу для чтения файла",
+             "solution": "with open('file.txt', 'r') as f:\n    content = f.read()\nprint(content)"},
+            {"title": "Модули", "type": "theory",
+             "content": "Модули позволяют организовывать код в отдельные файлы."},
+            {"title": "Импорт модуля", "type": "code",
+             "content": "Импортируйте модуль math и используйте функцию sqrt",
+             "solution": "import math\nprint(math.sqrt(16))"},
+            {"title": "Классы", "type": "theory",
+             "content": "Классы - это шаблоны для создания объектов в объектно-ориентированном программировании."},
+            {"title": "Создание класса", "type": "code",
+             "content": "Создайте простой класс для представления автомобиля",
+             "solution": "class Car:\n    def __init__(self, brand):\n        self.brand = brand\n\nmy_car = Car('Toyota')\nprint(my_car.brand)"},
+            {"title": "Наследование", "type": "theory",
+             "content": "Наследование позволяет создавать новые классы на основе существующих."}
+        ],
+        3: [
+            {"title": "Декораторы", "type": "theory",
+             "content": "Декораторы позволяют изменять поведение функций без изменения их кода."},
+            {"title": "Простейший декоратор", "type": "code",
+             "content": "Создайте декоратор, который выводит время выполнения функции",
+             "solution": "import time\ndef timer(func):\n    def wrapper(*args, **kwargs):\n        start = time.time()\n        result = func(*args, **kwargs)\n        end = time.time()\n        print(f'Время выполнения: {end-start} сек')\n        return result\n    return wrapper"},
+            {"title": "Генераторы", "type": "theory",
+             "content": "Генераторы создают последовательности значений на лету."},
+            {"title": "Создание генератора", "type": "code",
+             "content": "Создайте генератор, который возвращает квадраты чисел",
+             "solution": "def squares(n):\n    for i in range(n):\n        yield i ** 2\n\nfor sq in squares(5):\n    print(sq)"},
+            {"title": "List Comprehensions", "type": "theory",
+             "content": "List comprehension - это компактный способ создания списков."},
+            {"title": "Использование list comprehension", "type": "code",
+             "content": "Создайте список квадратов чисел от 0 до 9",
+             "solution": "squares = [x**2 for x in range(10)]\nprint(squares)"},
+            {"title": "Lambda-функции", "type": "theory",
+             "content": "Lambda-функции - это анонимные функции, определяемые в одной строке."},
+            {"title": "Пример lambda", "type": "code",
+             "content": "Используйте lambda для сортировки списка кортежей",
+             "solution": "data = [(1, 'one'), (3, 'three'), (2, 'two')]\ndata.sort(key=lambda x: x[0])\nprint(data)"},
+            {"title": "Итераторы", "type": "theory",
+             "content": "Итераторы позволяют перебирать элементы коллекции."},
+            {"title": "Создание итератора", "type": "code",
+             "content": "Создайте класс-итератор для обратного вывода строки",
+             "solution": "class Reverse:\n    def __init__(self, data):\n        self.data = data\n        self.index = len(data)\n    \n    def __iter__(self):\n        return self\n    \n    def __next__(self):\n        if self.index == 0:\n            raise StopIteration\n        self.index -= 1\n        return self.data[self.index]"},
+            {"title": "Менеджеры контекста", "type": "theory",
+             "content": "Менеджеры контекста помогают управлять ресурсами."},
+            {"title": "Создание менеджера контекста", "type": "code",
+             "content": "Создайте простой менеджер контекста",
+             "solution": "class MyContext:\n    def __enter__(self):\n        print('Вход в контекст')\n        return self\n    \n    def __exit__(self, exc_type, exc_val, exc_tb):\n        print('Выход из контекста')\n\nwith MyContext():\n    print('Внутри контекста')"},
+            {"title": "Многопоточность", "type": "theory",
+             "content": "Многопоточность позволяет выполнять несколько задач одновременно."},
+            {"title": "Простейший поток", "type": "code",
+             "content": "Создайте и запустите простой поток",
+             "solution": "import threading\nimport time\n\ndef worker():\n    print('Поток запущен')\n    time.sleep(1)\n    print('Поток завершён')\n\nthread = threading.Thread(target=worker)\nthread.start()\nthread.join()"},
+            {"title": "Работа с JSON", "type": "theory",
+             "content": "JSON - популярный формат для обмена данными."}
+        ],
+        4: [
+            {"title": "Веб-скрейпинг", "type": "theory",
+             "content": "Веб-скрейпинг - это автоматизированный сбор данных с веб-сайтов."},
+            {"title": "Простой парсер", "type": "code",
+             "content": "Напишите программу для извлечения всех ссылок со страницы",
+             "solution": "import requests\nfrom bs4 import BeautifulSoup\n\nurl = 'https://example.com'\nresponse = requests.get(url)\nsoup = BeautifulSoup(response.text, 'html.parser')\nlinks = [a['href'] for a in soup.find_all('a', href=True)]\nprint(links)"},
+            {"title": "Работа с API", "type": "theory",
+             "content": "API позволяют программам взаимодействовать друг с другом."},
+            {"title": "Запрос к API", "type": "code",
+             "content": "Сделайте GET-запрос к публичному API",
+             "solution": "import requests\n\nresponse = requests.get('https://api.github.com')\nprint(response.status_code)\nprint(response.json())"},
+            {"title": "Базы данных", "type": "theory",
+             "content": "SQLite - встроенная в Python база данных."},
+            {"title": "Работа с SQLite", "type": "code",
+             "content": "Создайте таблицу и вставьте данные",
+             "solution": "import sqlite3\n\nconn = sqlite3.connect('test.db')\ncursor = conn.cursor()\ncursor.execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)')\ncursor.execute('INSERT INTO users (name) VALUES (?)', ('Alice',))\nconn.commit()\nconn.close()"},
+            {"title": "Асинхронное программирование", "type": "theory",
+             "content": "Async/await позволяют писать асинхронный код."},
+            {"title": "Простая async функция", "type": "code",
+             "content": "Напишите асинхронную функцию, которая ждёт 1 секунду",
+             "solution": "import asyncio\n\nasync def wait_and_print():\n    await asyncio.sleep(1)\n    print('Прошла 1 секунда')\n\nasyncio.run(wait_and_print())"},
+            {"title": "Тестирование", "type": "theory",
+             "content": "Тестирование помогает убедиться, что код работает правильно."},
+            {"title": "Простейший тест", "type": "code",
+             "content": "Напишите тест для функции сложения",
+             "solution": "def add(a, b):\n    return a + b\n\nassert add(2, 2) == 4, '2 + 2 должно быть 4'\nassert add(-1, 1) == 0, '-1 + 1 должно быть 0'\nprint('Все тесты пройдены!')"},
+            {"title": "Виртуальные окружения", "type": "theory",
+             "content": "Виртуальные окружения изолируют зависимости проектов."},
+            {"title": "Создание venv", "type": "code",
+             "content": "Создайте виртуальное окружение и установите пакет",
+             "solution": "# В терминале:\n# python -m venv myenv\n# source myenv/bin/activate  # или myenv\\Scripts\\activate на Windows\n# pip install requests"},
+            {"title": "Пакетирование", "type": "theory",
+             "content": "Пакетирование позволяет распространять Python-код."},
+            {"title": "Создание setup.py", "type": "code",
+             "content": "Создайте минимальный setup.py файл",
+             "solution": "from setuptools import setup, find_packages\n\nsetup(\n    name='mypackage',\n    version='0.1',\n    packages=find_packages(),\n    install_requires=['requests'],\n)"},
+            {"title": "Оптимизация", "type": "theory",
+             "content": "Профилирование помогает найти узкие места в коде."},
+            {"title": "Использование timeit", "type": "code",
+             "content": "Измерьте время выполнения функции",
+             "solution": "import timeit\n\ndef slow_function():\n    total = 0\n    for i in range(1000000):\n        total += i\n    return total\n\nprint(timeit.timeit(slow_function, number=10))"},
+            {"title": "Итоговый проект", "type": "project",
+             "content": "Создайте простое консольное приложение - список задач",
+             "solution": "class TaskManager:\n    def __init__(self):\n        self.tasks = []\n    \n    def add_task(self, task):\n        self.tasks.append({'task': task, 'done': False})\n    \n    def list_tasks(self):\n        for i, task in enumerate(self.tasks, 1):\n            status = '✓' if task['done'] else '✗'\n            print(f'{i}. [{status}] {task[\"task\"]}')\n    \n    def mark_done(self, index):\n        if 0 <= index < len(self.tasks):\n            self.tasks[index]['done'] = True\n\nmanager = TaskManager()\nmanager.add_task('Изучить Python')\nmanager.add_task('Написать проект')\nmanager.list_tasks()"}
+        ]
+    }
+
+
+# Основное приложение
+class PyLearnApp:
+    def __init__(self, page: ft.Page):
+        self.page = page
+        self.data_manager = DataManager()
+        self.setup_page()
+        self.setup_ui()
+
+    def setup_page(self):
+        self.page.title = AppConfig.APP_TITLE
+        self.page.theme_mode = ft.ThemeMode.LIGHT
+        self.page.bgcolor = AppConfig.BACKGROUND_COLOR
+        self.page.padding = 0
+        self.page.fonts = {
+            "Roboto": "Roboto-Regular.ttf",
+        }
+        self.page.theme = ft.Theme(font_family="Roboto")
+        self.page.on_close = self.on_close
+
+    def setup_ui(self):
+        # Верхняя панель
+        self.top_bar = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.IconButton(
+                        icon=ft.Icons.MENU,
+                        icon_color="white",
+                        on_click=self.show_menu
+                    ),
+                    ft.Text(
+                        AppConfig.APP_TITLE,
+                        size=20,
+                        weight=ft.FontWeight.BOLD,
+                        color="white"
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.DIAMOND, color="white", size=20),
+                            ft.Text(str(self.data_manager.user_data.diamonds), color="white"),
+                            ft.Icon(ft.Icons.STAR, color="yellow", size=20),
+                            ft.Text(str(self.data_manager.user_data.experience), color="white"),
+                        ],
+                        spacing=5
+                    )
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+            ),
+            bgcolor=AppConfig.PRIMARY_COLOR,
+            padding=ft.padding.all(10),
+            border_radius=ft.border_radius.only(bottom_left=20, bottom_right=20)
+        )
+
+        # Основной контейнер
+        self.main_content = ft.Container(
+            expand=True,
+            padding=ft.padding.all(10)
+        )
+
+        # Нижняя панель навигации
+        self.bottom_nav = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.IconButton(
+                        icon=ft.Icons.HOME,
+                        icon_color=AppConfig.PRIMARY_COLOR,
+                        on_click=lambda e: self.show_home(),
+                        tooltip="Главная"
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.SCHOOL,
+                        icon_color=AppConfig.TEXT_COLOR,
+                        on_click=lambda e: self.show_lessons(),
+                        tooltip="Уроки"
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.SHOP,
+                        icon_color=AppConfig.TEXT_COLOR,
+                        on_click=lambda e: self.show_shop(),
+                        tooltip="Магазин"
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.PERSON,
+                        icon_color=AppConfig.TEXT_COLOR,
+                        on_click=lambda e: self.show_profile(),
+                        tooltip="Профиль"
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.SETTINGS,
+                        icon_color=AppConfig.TEXT_COLOR,
+                        on_click=lambda e: self.show_admin(),
+                        tooltip="Админ-панель"
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_AROUND
+            ),
+            bgcolor="white",
+            padding=ft.padding.all(10),
+            border_radius=ft.border_radius.only(top_left=20, top_right=20),
+            shadow=ft.BoxShadow(
+                spread_radius=1,
+                blur_radius=5,
+                color=ft.Colors.BLACK12,
+            )
+        )
+
+        # Собираем интерфейс
+        self.page.add(
+            ft.Column(
+                controls=[
+                    self.top_bar,
+                    self.main_content,
+                    self.bottom_nav
+                ],
+                expand=True,
+                spacing=0
+            )
+        )
+
+        # Показываем главный экран
+        self.show_home()
+
+    def show_home(self):
+        self.update_nav_icon("home")
+        progress = self.data_manager.get_progress()
+
+        content = ft.Column(
+            controls=[
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Добро пожаловать в PyLearn!",
+                                size=28,
+                                weight=ft.FontWeight.BOLD,
+                                color=AppConfig.PRIMARY_COLOR
+                            ),
+                            ft.Text(
+                                "Начните изучать Python прямо сейчас",
+                                size=16,
+                                color=AppConfig.TEXT_COLOR
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                ),
+
+                # Статистика
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Ваша статистика",
+                                size=18,
+                                weight=ft.FontWeight.BOLD
+                            ),
+                            ft.Row(
+                                controls=[
+                                    self.create_stat_card("Дней подряд", str(self.data_manager.user_data.streak_days),
+                                                          ft.Icons.CALENDAR_TODAY, AppConfig.SECONDARY_COLOR),
+                                    self.create_stat_card("Выполнено заданий",
+                                                          str(len(self.data_manager.user_data.completed_tasks)),
+                                                          ft.Icons.CHECK_CIRCLE, AppConfig.SUCCESS_COLOR),
+                                    self.create_stat_card("Всего XP", str(self.data_manager.user_data.experience),
+                                                          ft.Icons.STAR, AppConfig.WARNING_COLOR),
+                                ]
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                ),
+
+                # Прогресс
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        "Общий прогресс",
+                                        size=18,
+                                        weight=ft.FontWeight.BOLD,
+                                        expand=True
+                                    ),
+                                    ft.Text(f"{progress:.1f}%")
+                                ]
+                            ),
+                            ft.ProgressBar(
+                                value=progress / 100,
+                                color=AppConfig.PRIMARY_COLOR,
+                                bgcolor="#E0E0E0",
+                                height=10
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                ),
+
+                # Продолжить обучение
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Продолжить обучение",
+                                size=18,
+                                weight=ft.FontWeight.BOLD
+                            ),
+                            ft.ElevatedButton(
+                                content=ft.Row(
+                                    controls=[
+                                        ft.Icon(ft.Icons.PLAY_ARROW, color="white"),
+                                        ft.Text(
+                                            f"Урок {self.data_manager.user_data.current_lesson}, Задание {self.data_manager.user_data.current_task}",
+                                            color="white"
+                                        )
+                                    ]
+                                ),
+                                style=ft.ButtonStyle(
+                                    bgcolor=AppConfig.PRIMARY_COLOR,
+                                    shape=ft.RoundedRectangleBorder(radius=10)
+                                ),
+                                on_click=lambda e: self.show_current_task()
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15
+                )
+            ],
+            scroll=ft.ScrollMode.AUTO
+        )
+
+        self.main_content.content = content
+        self.page.update()
+
+    def show_lessons(self):
+        self.update_nav_icon("lessons")
+
+        lesson_cards = []
+        for lesson_num in range(1, AppConfig.LESSONS + 1):
+            completed_tasks = 0
+            for task_num in range(1, AppConfig.TASKS_PER_LESSON + 1):
+                key = f"lesson_{lesson_num}_task_{task_num}"
+                if key in self.data_manager.user_data.completed_tasks:
+                    completed_tasks += 1
+
+            progress = (completed_tasks / AppConfig.TASKS_PER_LESSON) * 100
+            is_unlocked = lesson_num <= self.data_manager.user_data.current_lesson
+
+            lesson_cards.append(
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Icon(
+                                        ft.Icons.LOCK_OPEN if is_unlocked else ft.Icons.LOCK,
+                                        color=AppConfig.SUCCESS_COLOR if is_unlocked else AppConfig.DANGER_COLOR
+                                    ),
+                                    ft.Text(
+                                        f"Урок {lesson_num}",
+                                        size=16,
+                                        weight=ft.FontWeight.BOLD,
+                                        expand=True
+                                    ),
+                                    ft.Text(f"{completed_tasks}/{AppConfig.TASKS_PER_LESSON}")
+                                ]
+                            ),
+                            ft.ProgressBar(
+                                value=progress / 100,
+                                color=AppConfig.SUCCESS_COLOR if is_unlocked else AppConfig.DANGER_COLOR,
+                                bgcolor="#E0E0E0",
+                                height=5
+                            ),
+                            ft.ElevatedButton(
+                                text="Начать" if is_unlocked else "Заблокировано",
+                                disabled=not is_unlocked,
+                                on_click=lambda e, ln=lesson_num: self.show_lesson_tasks(ln)
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                )
+            )
+
+        content = ft.Column(
+            controls=[
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Уроки Python",
+                                size=24,
+                                weight=ft.FontWeight.BOLD,
+                                color=AppConfig.PRIMARY_COLOR
+                            ),
+                            ft.Text(
+                                "Изучайте Python шаг за шагом",
+                                size=16,
+                                color=AppConfig.TEXT_COLOR
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                ),
+                *lesson_cards
+            ],
+            scroll=ft.ScrollMode.AUTO
+        )
+
+        self.main_content.content = content
+        self.page.update()
+
+    def show_lesson_tasks(self, lesson_num):
+        tasks = LessonGenerator.LESSONS.get(lesson_num, [])
+
+        task_cards = []
+        for i, task in enumerate(tasks, 1):
+            key = f"lesson_{lesson_num}_task_{i}"
+            is_completed = key in self.data_manager.user_data.completed_tasks
+
+            task_type_icon = {
+                "theory": ft.Icons.BOOK,
+                "code": ft.Icons.CODE,
+                "project": ft.Icons.ARCHITECTURE
+            }.get(task["type"], ft.Icons.QUESTION_MARK)
+
+            task_cards.append(
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Icon(
+                                        task_type_icon,
+                                        color=AppConfig.SUCCESS_COLOR if is_completed else AppConfig.PRIMARY_COLOR
+                                    ),
+                                    ft.Column(
+                                        controls=[
+                                            ft.Text(
+                                                task["title"],
+                                                size=16,
+                                                weight=ft.FontWeight.BOLD,
+                                                expand=True
+                                            ),
+                                            ft.Text(
+                                                task["type"].capitalize(),
+                                                size=12,
+                                                color=AppConfig.TEXT_COLOR
+                                            )
+                                        ],
+                                        expand=True
+                                    ),
+                                    ft.Icon(
+                                        ft.Icons.CHECK_CIRCLE if is_completed else ft.Icons.RADIO_BUTTON_UNCHECKED,
+                                        color=AppConfig.SUCCESS_COLOR if is_completed else AppConfig.TEXT_COLOR
+                                    )
+                                ]
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(15),
+                    bgcolor="white",
+                    border_radius=10,
+                    margin=ft.margin.only(bottom=5),
+                    on_click=lambda e, ln=lesson_num, tn=i: self.show_task(ln, tn)
+                )
+            )
+
+        content = ft.Column(
+            controls=[
+                ft.Container(
+                    content=ft.Row(
+                        controls=[
+                            ft.IconButton(
+                                icon=ft.Icons.ARROW_BACK,
+                                on_click=lambda e: self.show_lessons()
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        f"Урок {lesson_num}",
+                                        size=20,
+                                        weight=ft.FontWeight.BOLD
+                                    ),
+                                    ft.Text(
+                                        f"Задания {len(tasks)}/{AppConfig.TASKS_PER_LESSON}",
+                                        size=14,
+                                        color=AppConfig.TEXT_COLOR
+                                    )
+                                ],
+                                expand=True
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(10),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                ),
+                *task_cards
+            ],
+            scroll=ft.ScrollMode.AUTO
+        )
+
+        self.main_content.content = content
+        self.page.update()
+
+    def show_task(self, lesson_num, task_num):
+        tasks = LessonGenerator.LESSONS.get(lesson_num, [])
+        if task_num > len(tasks):
+            return
+
+        task = tasks[task_num - 1]
+        key = f"lesson_{lesson_num}_task_{task_num}"
+        is_completed = key in self.data_manager.user_data.completed_tasks
+
+        # Элементы интерфейса
+        code_input = ft.TextField(
+            multiline=True,
+            min_lines=5,
+            max_lines=10,
+            label="Введите ваш код",
+            border_color=AppConfig.PRIMARY_COLOR,
+            visible=task["type"] == "code"
+        )
+
+        check_button = ft.ElevatedButton(
+            text="Проверить" if not is_completed else "Задание выполнено!",
+            icon=ft.Icons.CHECK_CIRCLE,
+            disabled=is_completed,
+            on_click=lambda e: self.check_task(lesson_num, task_num,
+                                               code_input.value if task["type"] == "code" else None),
+            style=ft.ButtonStyle(
+                bgcolor=AppConfig.SUCCESS_COLOR if is_completed else AppConfig.PRIMARY_COLOR
+            )
+        )
+
+        solution_dialog = ft.AlertDialog(
+            title=ft.Text("Решение"),
+            content=ft.Text(task.get("solution", "Нет решения")),
+            actions=[ft.TextButton("Закрыть", on_click=lambda e: self.close_dialog())]
+        )
+
+        content = ft.Column(
+            controls=[
+                ft.Container(
+                    content=ft.Row(
+                        controls=[
+                            ft.IconButton(
+                                icon=ft.Icons.ARROW_BACK,
+                                on_click=lambda e: self.show_lesson_tasks(lesson_num)
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        task["title"],
+                                        size=20,
+                                        weight=ft.FontWeight.BOLD
+                                    ),
+                                    ft.Text(
+                                        f"Урок {lesson_num}, Задание {task_num}",
+                                        size=14,
+                                        color=AppConfig.TEXT_COLOR
+                                    )
+                                ],
+                                expand=True
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.LIGHTBULB,
+                                tooltip="Показать решение",
+                                on_click=lambda e: self.show_dialog(solution_dialog)
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(10),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                ),
+
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                task["content"],
+                                size=16
+                            ),
+                            code_input,
+                            ft.Container(height=10),
+                            check_button
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15
+                )
+            ],
+            scroll=ft.ScrollMode.AUTO
+        )
+
+        self.main_content.content = content
+        self.page.update()
+
+    def show_current_task(self):
+        self.show_task(
+            self.data_manager.user_data.current_lesson,
+            self.data_manager.user_data.current_task
+        )
+
+    def check_task(self, lesson_num, task_num, user_code=None):
+        tasks = LessonGenerator.LESSONS.get(lesson_num, [])
+        task = tasks[task_num - 1]
+
+        if task["type"] == "code" and user_code:
+            # Простая проверка кода (в реальном приложении нужно использовать безопасное выполнение кода)
+            solution = task.get("solution", "").lower().replace(" ", "").replace("\n", "")
+            user_solution = user_code.lower().replace(" ", "").replace("\n", "")
+
+            # Базовое сравнение (в продакшене нужно более сложное решение)
+            if solution in user_solution or user_solution in solution:
+                if self.data_manager.complete_task(lesson_num, task_num):
+                    self.show_success_dialog()
+                    self.show_home()  # Обновляем главный экран
+                    return
+
+        elif task["type"] == "theory":
+            # Для теоретических заданий просто отмечаем как выполненные
+            if self.data_manager.complete_task(lesson_num, task_num):
+                self.show_success_dialog()
+                self.show_home()
+                return
+
+        # Если задание не выполнено
+        self.show_error_dialog()
+
+    def show_shop(self):
+        self.update_nav_icon("shop")
+
+        # Создаем карточки для множителей опыта
+        multiplier_cards = []
+        for minutes, info in AppConfig.XP_MULTIPLIERS.items():
+            multiplier_cards.append(
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Icon(ft.Icons.FLASH_ON, color=AppConfig.WARNING_COLOR),
+                                    ft.Text(f"x2 XP на {minutes} мин", weight=ft.FontWeight.BOLD, expand=True)
+                                ]
+                            ),
+                            ft.Text(f"Цена: {info['price']} алмазов", size=12),
+                            ft.ElevatedButton(
+                                text="Купить",
+                                on_click=lambda e, m=minutes, p=info['price']: self.buy_xp_multiplier(m, p)
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(15),
+                    bgcolor="white",
+                    border_radius=10,
+                    width=180,
+                    margin=ft.margin.all(5)
+                )
+            )
+
+        # Создаем карточки для ящиков
+        box_cards = []
+        for box_id, box_info in AppConfig.BOXES.items():
+            rarity_info = AppConfig.RARITIES[box_info["rarity"]]
+            box_cards.append(
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.CARD_GIFTCARD, size=40, color=rarity_info["color"]),
+                                bgcolor=f"{rarity_info['color']}20",
+                                padding=10,
+                                border_radius=10
+                            ),
+                            ft.Text(box_info["name"], weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+                            ft.Text(f"Цена: {box_info['price']} алмазов", size=12),
+                            ft.ElevatedButton(
+                                text="Открыть",
+                                on_click=lambda e, bi=box_id: self.open_box(bi),
+                                style=ft.ButtonStyle(
+                                    bgcolor=rarity_info["color"]
+                                )
+                            )
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                    ),
+                    padding=ft.padding.all(15),
+                    bgcolor="white",
+                    border_radius=15,
+                    width=150,
+                    margin=ft.margin.all(5)
+                )
+            )
+
+        content = ft.Column(
+            controls=[
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Магазин",
+                                size=24,
+                                weight=ft.FontWeight.BOLD,
+                                color=AppConfig.PRIMARY_COLOR
+                            ),
+                            ft.Text(
+                                "Покупайте бонусы и открывайте ящики",
+                                size=16,
+                                color=AppConfig.TEXT_COLOR
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                ),
+
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Множители опыта", size=18, weight=ft.FontWeight.BOLD),
+                            ft.Row(
+                                controls=multiplier_cards,
+                                scroll=ft.ScrollMode.AUTO,
+                                wrap=True
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                ),
+
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Ящики", size=18, weight=ft.FontWeight.BOLD),
+                            ft.Row(
+                                controls=box_cards,
+                                scroll=ft.ScrollMode.AUTO,
+                                wrap=True
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15
+                )
+            ],
+            scroll=ft.ScrollMode.AUTO
+        )
+
+        self.main_content.content = content
+        self.page.update()
+
+    def show_profile(self):
+        self.update_nav_icon("profile")
+
+        # Статистика по урокам
+        lesson_stats = []
+        for lesson_num in range(1, AppConfig.LESSONS + 1):
+            completed = 0
+            for task_num in range(1, AppConfig.TASKS_PER_LESSON + 1):
+                key = f"lesson_{lesson_num}_task_{task_num}"
+                if key in self.data_manager.user_data.completed_tasks:
+                    completed += 1
+
+            lesson_stats.append(
+                ft.Row(
+                    controls=[
+                        ft.Text(f"Урок {lesson_num}", expand=True),
+                        ft.Text(f"{completed}/{AppConfig.TASKS_PER_LESSON}")
+                    ]
+                )
+            )
+
+        content = ft.Column(
+            controls=[
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.CircleAvatar(
+                                foreground_image_url="https://i.pravatar.cc/150?img=1",
+                                radius=40
+                            ),
+                            ft.Text(
+                                "Ученик PyLearn",
+                                size=20,
+                                weight=ft.FontWeight.BOLD
+                            ),
+                            ft.Text(
+                                f"Дней подряд: {self.data_manager.user_data.streak_days}",
+                                size=16,
+                                color=AppConfig.TEXT_COLOR
+                            )
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                ),
+
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Общая статистика", size=18, weight=ft.FontWeight.BOLD),
+                            ft.Row(
+                                controls=[
+                                    self.create_profile_stat("Алмазы", str(self.data_manager.user_data.diamonds),
+                                                             ft.Icons.DIAMOND),
+                                    self.create_profile_stat("Опыт", str(self.data_manager.user_data.experience),
+                                                             ft.Icons.STAR),
+                                    self.create_profile_stat("Задания",
+                                                             str(len(self.data_manager.user_data.completed_tasks)),
+                                                             ft.Icons.CHECK_CIRCLE),
+                                ]
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                ),
+
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Прогресс по урокам", size=18, weight=ft.FontWeight.BOLD),
+                            *lesson_stats
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15
+                )
+            ],
+            scroll=ft.ScrollMode.AUTO
+        )
+
+        self.main_content.content = content
+        self.page.update()
+
+    def show_admin(self):
+        self.update_nav_icon("admin")
+
+        content = ft.Column(
+            controls=[
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Админ-панель",
+                                size=24,
+                                weight=ft.FontWeight.BOLD,
+                                color=AppConfig.PRIMARY_COLOR
+                            ),
+                            ft.Text(
+                                "Быстрые настройки и управление",
+                                size=16,
+                                color=AppConfig.TEXT_COLOR
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                ),
+
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Быстрый доступ к урокам", size=18, weight=ft.FontWeight.BOLD),
+                            ft.Row(
+                                controls=[
+                                    ft.ElevatedButton(
+                                        text=f"Урок {i}",
+                                        on_click=lambda e, ln=i: self.show_lesson_tasks(ln),
+                                        width=80
+                                    ) for i in range(1, AppConfig.LESSONS + 1)
+                                ],
+                                wrap=True
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15,
+                    margin=ft.margin.only(bottom=10)
+                ),
+
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Управление ресурсами", size=18, weight=ft.FontWeight.BOLD),
+                            ft.Row(
+                                controls=[
+                                    ft.ElevatedButton(
+                                        text="+100 алмазов",
+                                        icon=ft.Icons.DIAMOND,
+                                        on_click=lambda e: self.add_diamonds(100)
+                                    ),
+                                    ft.ElevatedButton(
+                                        text="+1 день",
+                                        icon=ft.Icons.CALENDAR_TODAY,
+                                        on_click=lambda e: self.add_streak_day()
+                                    ),
+                                    ft.ElevatedButton(
+                                        text="Сбросить прогресс",
+                                        icon=ft.Icons.RESTART_ALT,
+                                        on_click=lambda e: self.reset_progress()
+                                    )
+                                ],
+                                wrap=True
+                            )
+                        ]
+                    ),
+                    padding=ft.padding.all(20),
+                    bgcolor="white",
+                    border_radius=15
+                )
+            ],
+            scroll=ft.ScrollMode.AUTO
+        )
+
+        self.main_content.content = content
+        self.page.update()
+
+    def buy_xp_multiplier(self, minutes, price):
+        if self.data_manager.user_data.diamonds >= price:
+            self.data_manager.user_data.diamonds -= price
+            self.data_manager.user_data.xp_multiplier = 2
+            self.data_manager.user_data.multiplier_end_time = time.time() + minutes * 60
+            self.data_manager.save_user_data()
+
+            # Показываем уведомление
+            self.show_notification(f"Множитель x2 XP активирован на {minutes} минут!")
+            self.show_shop()
+        else:
+            self.show_error_dialog("Недостаточно алмазов!")
+
+    def open_box(self, box_id):
+        box_info = AppConfig.BOXES[box_id]
+        rarity_info = AppConfig.RARITIES[box_info["rarity"]]
+
+        if self.data_manager.user_data.diamonds >= box_info["price"]:
+            self.data_manager.user_data.diamonds -= box_info["price"]
+
+            # Генерируем награду в зависимости от редкости
+            reward = self.generate_box_reward(box_info["rarity"])
+
+            # Анимация открытия ящика
+            self.show_box_animation(box_info["rarity"], reward)
+
+            self.data_manager.save_user_data()
+        else:
+            self.show_error_dialog("Недостаточно алмазов!")
+
+    def generate_box_reward(self, rarity):
+        rewards = {
+            "common": ["10 алмазов", "50 опыта", "Множитель x1.5 на 5 минут"],
+            "rare": ["50 алмазов", "200 опыта", "Множитель x2 на 10 минут", "Редкий аватар"],
+            "epic": ["100 алмазов", "500 опыта", "Множитель x3 на 15 минут", "Эпический аватар", "Специальный бейдж"],
+            "mythic": ["250 алмазов", "1000 опыта", "Множитель x5 на 20 минут", "Мифический аватар",
+                       "Эксклюзивный бейдж", "Доступ к бета-тесту"],
+            "legendary": ["500 алмазов", "2500 опыта", "Множитель x10 на 30 минут", "Легендарный аватар",
+                          "Уникальный бейдж", "Пожизненный премиум", "Персональный ментор"]
+        }
+
+        # В реальном приложении здесь была бы более сложная логика
+        reward = random.choice(rewards[rarity])
+
+        # Обработка награды
+        if "алмазов" in reward:
+            amount = int(reward.split()[0])
+            self.data_manager.user_data.diamonds += amount
+        elif "опыта" in reward:
+            amount = int(reward.split()[0])
+            self.data_manager.user_data.experience += amount
+
+        return reward
+
+    def show_box_animation(self, rarity, reward):
+        rarity_info = AppConfig.RARITIES[rarity]
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Поздравляем!", text_align=ft.TextAlign.CENTER),
+            content=ft.Column(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(ft.Icons.CARD_GIFTCARD, size=60, color=rarity_info["color"]),
+                        bgcolor=f"{rarity_info['color']}20",
+                        padding=20,
+                        border_radius=20,
+                        animate=ft.animation.Animation(1000, ft.AnimationCurve.BOUNCE_OUT)
+                    ),
+                    ft.Text(f"Редкость: {rarity_info['name']}", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Text(f"Награда: {reward}", size=18, weight=ft.FontWeight.BOLD, color=AppConfig.SUCCESS_COLOR),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                tight=True
+            ),
+            actions=[
+                ft.TextButton("Отлично!", on_click=lambda e: self.close_dialog())
+            ],
+            actions_alignment=ft.MainAxisAlignment.CENTER
+        )
+
+        self.show_dialog(dialog)
+
+    def add_diamonds(self, amount):
+        self.data_manager.user_data.diamonds += amount
+        self.data_manager.save_user_data()
+        self.show_notification(f"Добавлено {amount} алмазов!")
+        self.show_admin()
+
+    def add_streak_day(self):
+        self.data_manager.user_data.streak_days += 1
+        self.data_manager.save_user_data()
+        self.show_notification("Добавлен 1 день к серии!")
+        self.show_admin()
+
+    def reset_progress(self):
+        self.data_manager.user_data = UserData()
+        self.data_manager.save_user_data()
+        self.show_notification("Прогресс сброшен!")
+        self.show_admin()
+
+    def show_success_dialog(self):
+        xp_earned = 10 * self.data_manager.user_data.xp_multiplier
+        dialog = ft.AlertDialog(
+            title=ft.Text("Поздравляем!", text_align=ft.TextAlign.CENTER),
+            content=ft.Column(
+                controls=[
+                    ft.Icon(ft.Icons.CELEBRATION, size=60, color=AppConfig.SUCCESS_COLOR),
+                    ft.Text("Задание выполнено успешно!", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text(f"+{xp_earned} XP", size=24, weight=ft.FontWeight.BOLD, color=AppConfig.SUCCESS_COLOR),
+                    ft.Text(f"+{10} алмазов", size=20,
+                            color=AppConfig.SECONDARY_COLOR) if random.random() > 0.7 else None
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                tight=True
+            ),
+            actions=[
+                ft.TextButton("Продолжить", on_click=lambda e: self.close_dialog())
+            ],
+            actions_alignment=ft.MainAxisAlignment.CENTER
+        )
+
+        # Добавляем алмазы с шансом 30%
+        if random.random() > 0.7:
+            self.data_manager.user_data.diamonds += 10
+
+        self.show_dialog(dialog)
+
+    def show_error_dialog(self, message="Попробуйте ещё раз!"):
+        dialog = ft.AlertDialog(
+            title=ft.Text("Ошибка", text_align=ft.TextAlign.CENTER),
+            content=ft.Column(
+                controls=[
+                    ft.Icon(ft.Icons.ERROR, size=60, color=AppConfig.DANGER_COLOR),
+                    ft.Text(message, size=16, text_align=ft.TextAlign.CENTER)
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                tight=True
+            ),
+            actions=[
+                ft.TextButton("OK", on_click=lambda e: self.close_dialog())
+            ],
+            actions_alignment=ft.MainAxisAlignment.CENTER
+        )
+        self.show_dialog(dialog)
+
+    def show_notification(self, message):
+        snack_bar = ft.SnackBar(
+            content=ft.Text(message),
+            action="OK",
+            bgcolor=AppConfig.PRIMARY_COLOR
+        )
+        self.page.snack_bar = snack_bar
+        snack_bar.open = True
+        self.page.update()
+
+    def show_dialog(self, dialog):
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+
+    def close_dialog(self):
+        if self.page.dialog:
+            self.page.dialog.open = False
+            self.page.update()
+
+    def show_menu(self, e=None):
+        menu = ft.AlertDialog(
+            title=ft.Text("Меню"),
+            content=ft.Column(
+                controls=[
+                    ft.ListTile(
+                        leading=ft.Icon(ft.Icons.INFO),
+                        title=ft.Text("О приложении"),
+                        on_click=lambda e: self.show_about()
+                    ),
+                    ft.ListTile(
+                        leading=ft.Icon(ft.Icons.HELP),
+                        title=ft.Text("Помощь"),
+                        on_click=lambda e: self.show_help()
+                    ),
+                    ft.ListTile(
+                        leading=ft.Icon(ft.Icons.SETTINGS),
+                        title=ft.Text("Настройки"),
+                        on_click=lambda e: self.show_settings()
+                    ),
+                    ft.ListTile(
+                        leading=ft.Icon(ft.Icons.EXIT_TO_APP),
+                        title=ft.Text("Выход"),
+                        on_click=lambda e: self.page.window_close()
+                    )
+                ],
+                tight=True
+            )
+        )
+        self.show_dialog(menu)
+
+    def show_about(self):
+        dialog = ft.AlertDialog(
+            title=ft.Text("О приложении"),
+            content=ft.Text(
+                "PyLearn - интерактивное приложение для изучения Python.\n"
+                "Версия 1.0.0\n\n"
+                "Особенности:\n"
+                "• 60 заданий по Python\n"
+                "• Система вознаграждений\n"
+                "• Магазин с бонусами\n"
+                "• Отслеживание прогресса"
+            ),
+            actions=[ft.TextButton("Закрыть", on_click=lambda e: self.close_dialog())]
+        )
+        self.show_dialog(dialog)
+
+    def show_help(self):
+        dialog = ft.AlertDialog(
+            title=ft.Text("Помощь"),
+            content=ft.Text(
+                "Как пользоваться приложением:\n\n"
+                "1. Выберите урок в разделе 'Уроки'\n"
+                "2. Выполняйте задания последовательно\n"
+                "3. Зарабатывайте опыт и алмазы\n"
+                "4. Используйте алмазы в магазине\n"
+                "5. Следите за своим прогрессом в профиле\n\n"
+                "Удачи в изучении Python!"
+            ),
+            actions=[ft.TextButton("Закрыть", on_click=lambda e: self.close_dialog())]
+        )
+        self.show_dialog(dialog)
+
+    def show_settings(self):
+        dialog = ft.AlertDialog(
+            title=ft.Text("Настройки"),
+            content=ft.Column(
+                controls=[
+                    ft.Switch(label="Тёмная тема", value=False),
+                    ft.Switch(label="Звуковые эффекты", value=True),
+                    ft.Switch(label="Уведомления", value=True),
+                ],
+                tight=True
+            ),
+            actions=[
+                ft.TextButton("Сохранить", on_click=lambda e: self.close_dialog()),
+                ft.TextButton("Отмена", on_click=lambda e: self.close_dialog())
+            ]
+        )
+        self.show_dialog(dialog)
+
+    def create_stat_card(self, title, value, icon, color):
+        return ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.Icon(icon, color=color, size=24),
+                    ft.Text(value, size=20, weight=ft.FontWeight.BOLD),
+                    ft.Text(title, size=12, color=AppConfig.TEXT_COLOR)
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER
+            ),
+            padding=ft.padding.all(15),
+            bgcolor="white",
+            border_radius=10,
+            width=100,
+            alignment=ft.alignment.center
+        )
+
+    def create_profile_stat(self, title, value, icon):
+        return ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.Icon(icon, color=AppConfig.PRIMARY_COLOR, size=30),
+                    ft.Text(value, size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text(title, size=12)
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER
+            ),
+            padding=ft.padding.all(10),
+            bgcolor=f"{AppConfig.PRIMARY_COLOR}10",
+            border_radius=10,
+            expand=True
+        )
+
+    def update_nav_icon(self, active_icon):
+        # Сбрасываем все иконки к неактивному состоянию
+        Icons = {
+            "home": ft.Icons.HOME,
+            "lessons": ft.Icons.SCHOOL,
+            "shop": ft.Icons.SHOP,
+            "profile": ft.Icons.PERSON,
+            "admin": ft.Icons.SETTINGS
+        }
+
+        for i, button in enumerate(self.bottom_nav.content.controls):
+            if list(Icons.keys())[i] == active_icon:
+                button.icon_color = AppConfig.PRIMARY_COLOR
+            else:
+                button.icon_color = AppConfig.TEXT_COLOR
+
+        # Обновляем верхнюю панель
+        diamonds_text = self.top_bar.content.controls[2].controls[1]
+        diamonds_text.value = str(self.data_manager.user_data.diamonds)
+
+        experience_text = self.top_bar.content.controls[2].controls[3]
+        experience_text.value = str(self.data_manager.user_data.experience)
+
+        self.page.update()
+
+    def on_close(self):
+        self.data_manager.save_user_data()
+
+
+def main(page: ft.Page):
+    app = PyLearnApp(page)
+
+
+if __name__ == "__main__":
+    ft.app(target=main,)
